@@ -404,12 +404,19 @@ class Image:
         return Image(result)
 
     @staticmethod
-    def save_png_w_itxt(img_path: Union[str, Path], png_data: bytes, keyword: str, text: str):
+    def save_png_w_text(img_path: Union[str, Path], png_data: bytes, keyword: str, text: str):
         if png_data[:8] != b"\x89PNG\r\n\x1a\n":
             raise ValueError("Not a valid PNG file")
 
         offset = 8
         ihdr_inserted = False
+
+        # Sanitize text: encode as ASCII, replacing non-ASCII chars with '?'
+        # tEXt chunk is Latin-1 only → supports characters 0–255
+        # iTXT chunk would support UTF-8, but it seems some tools may not support decoding it correctly
+        # for use with generation metadata in put in iTXt (looking at you civitai, though a111 seems to)
+        keyword_bytes = keyword.encode("latin1", "replace")
+        text_bytes = text.encode("ascii", "replace")
 
         with open(img_path, "wb") as f:
             # Write PNG header
@@ -429,22 +436,12 @@ class Image:
                 f.write(crc)
 
                 if not ihdr_inserted and chunk_type == b"IHDR":
-                    # Insert iTXt chunk after IHDR
-                    keyword_bytes = keyword.encode("latin1")
-                    text_bytes = text.encode("utf-8")
-                    itxt_data = (
-                        keyword_bytes
-                        + b"\x00"
-                        + b"\x00"  # compression flag: 0 (not compressed)
-                        + b"\x00"  # compression method: 0
-                        + b"\x00"  # language tag: empty
-                        + b"\x00"  # translated keyword: empty
-                        + text_bytes
-                    )
-                    f.write(struct.pack(">I", len(itxt_data)))
-                    f.write(b"iTXt")
-                    f.write(itxt_data)
-                    f.write(struct.pack(">I", zlib.crc32(b"iTXt" + itxt_data) & 0xFFFFFFFF))
+                    # Insert tEXt chunk after IHDR
+                    tEXt_data = keyword_bytes + b"\x00" + text_bytes
+                    f.write(struct.pack(">I", len(tEXt_data)))
+                    f.write(b"tEXt")
+                    f.write(tEXt_data)
+                    f.write(struct.pack(">I", zlib.crc32(b"tEXt" + tEXt_data) & 0xFFFFFFFF))
                     ihdr_inserted = True
 
     @classmethod
@@ -595,7 +592,7 @@ class Image:
         self, filepath: Union[str, Path], metadata_text: str, format: ImageFileFormat | None = None
     ):
         png_bytes = bytes(self.to_bytes(format or ImageFileFormat.png))
-        self.save_png_w_itxt(filepath, png_bytes, "parameters", metadata_text)
+        self.save_png_w_text(filepath, png_bytes, "parameters", metadata_text)
 
     def debug_save(self, name):
         if settings.debug_image_folder:
